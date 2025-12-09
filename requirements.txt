@@ -1,0 +1,4 @@
+# Optional dependencies for enhanced display
+# The tool works without these, but they provide better visuals
+
+rich>=10.0.0    # Rich terminal output (optional)
