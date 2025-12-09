@@ -294,12 +294,51 @@ class HTMLReporter:
         self.scan_result = scan_result
         self.analyzer = SpaceAnalyzer(scan_result)
     
+    def _build_tree_html(self, dir_info: DirInfo, total_size: int, depth: int = 0, max_depth: int = 4) -> str:
+        """递归构建目录树 HTML"""
+        if depth > max_depth:
+            return ""
+        
+        size_str = format_size(dir_info.total_size)
+        percentage = (dir_info.total_size / total_size * 100) if total_size > 0 else 0
+        name = dir_info.name or dir_info.path
+        
+        # 过滤并排序子目录（只显示占比 > 0.5% 的）
+        min_size = total_size * 0.005
+        subdirs = [d for d in dir_info.subdirs.values() if d.total_size >= min_size]
+        subdirs.sort(key=lambda d: d.total_size, reverse=True)
+        
+        has_children = len(subdirs) > 0 and depth < max_depth
+        
+        html = f'''<div class="tree-item" style="margin-left: {depth * 20}px;">
+            <div class="tree-node {'has-children' if has_children else ''}">
+                <span class="tree-icon">{'📂' if has_children else '📁'}</span>
+                <span class="tree-name">{name}</span>
+                <span class="tree-size">{size_str}</span>
+                <span class="tree-percent">{percentage:.1f}%</span>
+                <div class="tree-bar"><div class="tree-bar-fill" style="width: {percentage}%"></div></div>
+            </div>'''
+        
+        if has_children:
+            html += '<div class="tree-children">'
+            for subdir in subdirs[:10]:  # 限制每层最多显示10个
+                html += self._build_tree_html(subdir, total_size, depth + 1, max_depth)
+            if len(subdirs) > 10:
+                html += f'<div class="tree-more" style="margin-left: {(depth+1) * 20}px;">... 还有 {len(subdirs) - 10} 个目录</div>'
+            html += '</div>'
+        
+        html += '</div>'
+        return html
+    
     def generate_report(self, output_path: str):
         """生成 HTML 报告"""
         summary = self.analyzer.get_summary()
         top_dirs = self.analyzer.get_top_directories(30)
         top_files = self.analyzer.get_top_files(30)
         ext_stats = self.analyzer.get_extension_stats()[:20]
+        
+        # 构建目录树 HTML
+        tree_html = self._build_tree_html(self.scan_result.root, summary['total_size'])
         
         html = f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -361,6 +400,26 @@ class HTMLReporter:
         .bar-container {{ width: 100px; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }}
         .bar {{ height: 100%; background: linear-gradient(90deg, var(--primary), #a855f7); border-radius: 4px; }}
         .percent {{ color: var(--text-dim); font-size: 0.875rem; min-width: 50px; }}
+        
+        /* 目录树样式 */
+        .tree-item {{ margin: 4px 0; }}
+        .tree-node {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }}
+        .tree-node:hover {{ background: rgba(255,255,255,0.05); }}
+        .tree-icon {{ font-size: 1rem; }}
+        .tree-name {{ color: var(--warning); font-weight: 500; min-width: 150px; }}
+        .tree-size {{ color: var(--success); font-family: monospace; min-width: 80px; }}
+        .tree-percent {{ color: var(--text-dim); font-size: 0.875rem; min-width: 50px; }}
+        .tree-bar {{ width: 100px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }}
+        .tree-bar-fill {{ height: 100%; background: linear-gradient(90deg, var(--primary), #a855f7); border-radius: 3px; }}
+        .tree-children {{ border-left: 2px solid rgba(255,255,255,0.1); margin-left: 10px; padding-left: 5px; }}
+        .tree-more {{ color: var(--text-dim); font-size: 0.875rem; padding: 4px 10px; font-style: italic; }}
     </style>
 </head>
 <body>
@@ -385,6 +444,11 @@ class HTMLReporter:
                 <div class="stat-value">{summary['errors_count']}</div>
                 <div class="stat-label">扫描错误</div>
             </div>
+        </div>
+        
+        <div class="section">
+            <h2>🌳 目录结构</h2>
+            {tree_html}
         </div>
         
         <div class="section">
