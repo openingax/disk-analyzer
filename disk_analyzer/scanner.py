@@ -65,6 +65,11 @@ class DiskScanner:
         '.TemporaryItems',
         '.vol',
         'System/Volumes/Data/.Spotlight-V100',
+        # iCloud 相关目录（扫描会卡住）
+        'Library/Mobile Documents',
+        'iCloud Drive',
+        'CloudStorage',
+        '.iCloud',
     }
     
     def __init__(
