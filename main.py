@@ -9,7 +9,11 @@ import sys
 import os
 import webbrowser
 import tempfile
+import subprocess
 from datetime import datetime
+
+# 版本号
+VERSION = "1.1.0"
 
 # 尝试导入 rich 库用于更好的进度显示
 try:
@@ -130,7 +134,129 @@ def create_parser():
         help='显示所有扫描错误'
     )
     
+    parser.add_argument(
+        '--update',
+        action='store_true',
+        help='更新工具到最新版本'
+    )
+    
+    parser.add_argument(
+        '--version', '-v',
+        action='store_true',
+        help='显示版本信息'
+    )
+    
     return parser
+
+
+def do_update():
+    """更新工具到最新版本"""
+    # 获取工具安装目录
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    print(f"🔄 正在更新 disk-analyzer...")
+    print(f"   安装目录: {script_dir}")
+    print()
+    
+    try:
+        # 检查是否是 git 仓库
+        if not os.path.exists(os.path.join(script_dir, '.git')):
+            print("❌ 错误: 当前目录不是 git 仓库，无法更新")
+            print("   请使用 git clone 重新安装工具")
+            sys.exit(1)
+        
+        # 获取当前版本
+        current_commit = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=script_dir,
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+        print(f"   当前版本: {VERSION} ({current_commit})")
+        
+        # 检查远程更新
+        print("   检查远程更新...")
+        subprocess.run(['git', 'fetch'], cwd=script_dir, capture_output=True)
+        
+        # 检查是否有更新
+        status = subprocess.run(
+            ['git', 'status', '-uno'],
+            cwd=script_dir,
+            capture_output=True,
+            text=True
+        ).stdout
+        
+        if 'Your branch is up to date' in status:
+            print("\n✅ 已经是最新版本！")
+            return
+        
+        # 拉取最新代码
+        print("   拉取最新代码...")
+        result = subprocess.run(
+            ['git', 'pull', '--rebase'],
+            cwd=script_dir,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print(f"❌ 更新失败: {result.stderr}")
+            sys.exit(1)
+        
+        # 获取新版本
+        new_commit = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=script_dir,
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+        
+        print(f"\n✅ 更新成功！")
+        print(f"   新版本: {new_commit}")
+        
+        # 显示更新日志
+        print("\n📝 更新内容:")
+        log = subprocess.run(
+            ['git', 'log', f'{current_commit}..{new_commit}', '--oneline'],
+            cwd=script_dir,
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+        
+        if log:
+            for line in log.split('\n'):
+                print(f"   • {line}")
+        
+    except FileNotFoundError:
+        print("❌ 错误: 未找到 git 命令，请先安装 git")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ 更新失败: {e}")
+        sys.exit(1)
+
+
+def show_version():
+    """显示版本信息"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    print(f"disk-analyzer v{VERSION}")
+    print(f"macOS 磁盘空间分析工具")
+    
+    # 获取 git 信息
+    try:
+        if os.path.exists(os.path.join(script_dir, '.git')):
+            commit = subprocess.run(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                cwd=script_dir,
+                capture_output=True,
+                text=True
+            ).stdout.strip()
+            print(f"Git commit: {commit}")
+    except:
+        pass
+    
+    print(f"\n安装路径: {script_dir}")
+    print("GitHub: https://github.com/openingax/disk-analyzer")
 
 
 def print_progress_simple(current_path: str, files: int, dirs: int):
@@ -149,6 +275,16 @@ def main():
     """主函数"""
     parser = create_parser()
     args = parser.parse_args()
+    
+    # 处理 --version 参数
+    if args.version:
+        show_version()
+        return
+    
+    # 处理 --update 参数
+    if args.update:
+        do_update()
+        return
     
     # 解析路径
     target_path = os.path.abspath(os.path.expanduser(args.path))
