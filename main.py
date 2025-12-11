@@ -25,7 +25,7 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
-from disk_analyzer.scanner import DiskScanner, parse_size
+from disk_analyzer.scanner import DiskScanner, parse_size, DuplicateFinder, format_size
 from disk_analyzer.analyzer import SpaceAnalyzer
 from disk_analyzer.reporter import TerminalReporter, JSONReporter, HTMLReporter
 
@@ -144,6 +144,19 @@ def create_parser():
         '--version', '-v',
         action='store_true',
         help='显示版本信息'
+    )
+    
+    parser.add_argument(
+        '--find-duplicates',
+        action='store_true',
+        help='检测重复文件（可能耗时较长）'
+    )
+    
+    parser.add_argument(
+        '--dup-min-size',
+        type=str,
+        default='10KB',
+        help='重复检测最小文件大小 (默认: 10KB)'
     )
     
     return parser
@@ -386,6 +399,72 @@ def main():
         print("\n所有扫描错误:")
         for error in result.errors:
             print(f"  • {error}")
+    
+    # 重复文件检测
+    if args.find_duplicates:
+        print()
+        print("=" * 60)
+        print("🔍 正在检测重复文件...")
+        print("=" * 60)
+        
+        try:
+            dup_min_size = parse_size(args.dup_min_size)
+        except ValueError:
+            dup_min_size = 10 * 1024  # 默认 10KB
+        
+        def dup_progress(current, total, stage):
+            stage_names = {
+                'size_group': '按大小分组',
+                'partial_hash': '计算部分哈希',
+                'full_hash': '计算完整哈希'
+            }
+            stage_name = stage_names.get(stage, stage)
+            if total > 0:
+                sys.stdout.write(f'\r   {stage_name}: {current}/{total} ({current*100//total}%)')
+                sys.stdout.flush()
+        
+        finder = DuplicateFinder(
+            min_size=dup_min_size,
+            progress_callback=dup_progress
+        )
+        
+        dup_start = datetime.now()
+        duplicates = finder.find_duplicates(result.all_files)
+        dup_elapsed = datetime.now() - dup_start
+        
+        # 清除进度行
+        sys.stdout.write('\r' + ' ' * 60 + '\r')
+        sys.stdout.flush()
+        
+        if duplicates:
+            summary = finder.get_summary(duplicates)
+            
+            print(f"\n✅ 检测完成! 耗时: {dup_elapsed.total_seconds():.1f} 秒\n")
+            print(f"   发现 {summary['total_groups']} 组重复文件")
+            print(f"   涉及 {summary['total_files']} 个文件")
+            print(f"   💾 可释放空间: {summary['formatted_wasted']}")
+            print()
+            
+            # 显示前 10 组重复文件
+            print("📄 最大的重复文件组:")
+            print("-" * 60)
+            
+            for i, group in enumerate(duplicates[:10], 1):
+                print(f"\n   {i}. [{group.count} 份] {group.formatted_size} (可释放 {group.formatted_wasted})")
+                for j, f in enumerate(group.files[:3]):
+                    prefix = "     └── " if j == min(2, len(group.files) - 1) else "     ├── "
+                    path_display = f.path
+                    if len(path_display) > 50:
+                        path_display = '...' + path_display[-47:]
+                    print(f"{prefix}{path_display}")
+                if len(group.files) > 3:
+                    print(f"     └── ... 还有 {len(group.files) - 3} 个文件")
+            
+            if len(duplicates) > 10:
+                print(f"\n   ... 还有 {len(duplicates) - 10} 组重复文件")
+            print()
+        else:
+            print(f"\n✅ 检测完成! 未发现重复文件 (最小检测大小: {format_size(dup_min_size)})\n")
 
 
 if __name__ == '__main__':

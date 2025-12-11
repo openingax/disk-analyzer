@@ -313,3 +313,195 @@ def parse_size(size_str: str) -> int:
     
     # 默认为字节
     return int(size_str)
+
+
+@dataclass
+class DuplicateGroup:
+    """重复文件组"""
+    file_hash: str
+    size: int
+    files: List[FileInfo] = field(default_factory=list)
+    
+    @property
+    def count(self) -> int:
+        return len(self.files)
+    
+    @property
+    def wasted_size(self) -> int:
+        """可节省的空间（保留一份，其余为浪费）"""
+        return self.size * (self.count - 1)
+    
+    @property
+    def formatted_size(self) -> str:
+        return format_size(self.size)
+    
+    @property
+    def formatted_wasted(self) -> str:
+        return format_size(self.wasted_size)
+
+
+class DuplicateFinder:
+    """
+    重复文件检测器
+    
+    使用两阶段哈希策略优化性能：
+    1. 按文件大小分组，只对相同大小的文件计算哈希
+    2. 先计算部分哈希（首尾各 4KB），快速排除大部分文件
+    3. 对部分哈希相同的文件计算完整哈希确认
+    """
+    
+    PARTIAL_HASH_SIZE = 4096  # 部分哈希读取的字节数（首尾各 4KB）
+    
+    def __init__(
+        self,
+        min_size: int = 10 * 1024,  # 默认忽略小于 10KB 的文件
+        max_workers: int = 4,
+        progress_callback=None
+    ):
+        """
+        初始化重复文件检测器
+        
+        Args:
+            min_size: 忽略小于此大小的文件（字节）
+            max_workers: 并行计算哈希的线程数
+            progress_callback: 进度回调函数 (current, total, stage)
+        """
+        self.min_size = min_size
+        self.max_workers = max_workers
+        self.progress_callback = progress_callback
+    
+    def find_duplicates(self, files: List[FileInfo]) -> List[DuplicateGroup]:
+        """
+        查找重复文件
+        
+        Args:
+            files: 扫描得到的文件列表
+            
+        Returns:
+            重复文件组列表，按可节省空间降序排列
+        """
+        import hashlib
+        from collections import defaultdict
+        
+        # 阶段1: 按大小分组
+        size_groups: Dict[int, List[FileInfo]] = defaultdict(list)
+        for f in files:
+            if f.size >= self.min_size:
+                size_groups[f.size].append(f)
+        
+        # 只保留有重复可能的组（大小相同的文件 >= 2）
+        candidates = [
+            group for group in size_groups.values() 
+            if len(group) >= 2
+        ]
+        
+        total_candidates = sum(len(g) for g in candidates)
+        if self.progress_callback:
+            self.progress_callback(0, total_candidates, "size_group")
+        
+        if not candidates:
+            return []
+        
+        # 阶段2: 计算部分哈希
+        partial_hash_groups: Dict[str, List[FileInfo]] = defaultdict(list)
+        processed = 0
+        
+        for group in candidates:
+            for file_info in group:
+                try:
+                    partial_hash = self._compute_partial_hash(file_info.path)
+                    key = f"{file_info.size}_{partial_hash}"
+                    partial_hash_groups[key].append(file_info)
+                except (IOError, OSError):
+                    pass  # 跳过无法读取的文件
+                
+                processed += 1
+                if self.progress_callback and processed % 100 == 0:
+                    self.progress_callback(processed, total_candidates, "partial_hash")
+        
+        # 只保留部分哈希相同的组
+        full_hash_candidates = [
+            group for group in partial_hash_groups.values()
+            if len(group) >= 2
+        ]
+        
+        total_full = sum(len(g) for g in full_hash_candidates)
+        if self.progress_callback:
+            self.progress_callback(0, total_full, "full_hash")
+        
+        # 阶段3: 计算完整哈希
+        full_hash_groups: Dict[str, List[FileInfo]] = defaultdict(list)
+        processed = 0
+        
+        for group in full_hash_candidates:
+            for file_info in group:
+                try:
+                    full_hash = self._compute_full_hash(file_info.path)
+                    full_hash_groups[full_hash].append(file_info)
+                except (IOError, OSError):
+                    pass
+                
+                processed += 1
+                if self.progress_callback and processed % 10 == 0:
+                    self.progress_callback(processed, total_full, "full_hash")
+        
+        # 构建结果
+        duplicates = []
+        for file_hash, group in full_hash_groups.items():
+            if len(group) >= 2:
+                dup_group = DuplicateGroup(
+                    file_hash=file_hash,
+                    size=group[0].size,
+                    files=group
+                )
+                duplicates.append(dup_group)
+        
+        # 按可节省空间降序排序
+        duplicates.sort(key=lambda g: g.wasted_size, reverse=True)
+        
+        return duplicates
+    
+    def _compute_partial_hash(self, path: str) -> str:
+        """计算文件的部分哈希（首尾各 4KB）"""
+        import hashlib
+        
+        hasher = hashlib.md5()
+        file_size = os.path.getsize(path)
+        
+        with open(path, 'rb') as f:
+            # 读取开头
+            hasher.update(f.read(self.PARTIAL_HASH_SIZE))
+            
+            # 如果文件足够大，也读取结尾
+            if file_size > self.PARTIAL_HASH_SIZE * 2:
+                f.seek(-self.PARTIAL_HASH_SIZE, 2)  # 从文件末尾往前
+                hasher.update(f.read(self.PARTIAL_HASH_SIZE))
+        
+        return hasher.hexdigest()
+    
+    def _compute_full_hash(self, path: str) -> str:
+        """计算文件的完整 MD5 哈希"""
+        import hashlib
+        
+        hasher = hashlib.md5()
+        
+        with open(path, 'rb') as f:
+            # 分块读取，避免大文件占用过多内存
+            for chunk in iter(lambda: f.read(65536), b''):
+                hasher.update(chunk)
+        
+        return hasher.hexdigest()
+    
+    def get_summary(self, duplicates: List[DuplicateGroup]) -> Dict:
+        """获取重复文件统计摘要"""
+        total_groups = len(duplicates)
+        total_files = sum(g.count for g in duplicates)
+        total_wasted = sum(g.wasted_size for g in duplicates)
+        
+        return {
+            'total_groups': total_groups,
+            'total_files': total_files,
+            'total_wasted': total_wasted,
+            'formatted_wasted': format_size(total_wasted)
+        }
+
