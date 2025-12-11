@@ -12,6 +12,45 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 
+# 媒体文件类型分类
+MEDIA_TYPES = {
+    'video': {'.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v', '.mpeg', '.mpg', '.3gp'},
+    'audio': {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.wma', '.ogg', '.opus', '.aiff', '.alac'},
+    'image': {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tiff', '.tif', '.raw', '.svg', '.ico'},
+    'document': {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.rtf', '.odt'},
+    'archive': {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.dmg', '.iso'},
+    'code': {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.c', '.cpp', '.h', '.go', '.rs', '.swift', '.kt'},
+}
+
+# 可清理的文件/目录模式
+CLEANABLE_PATTERNS = {
+    'cache': {'cache', 'caches', '.cache', '__pycache__', '.pytest_cache', '.mypy_cache'},
+    'logs': {'.log', 'logs', 'log'},
+    'temp': {'tmp', 'temp', '.tmp', '.temp', 'temporary'},
+    'build': {'build', 'dist', 'node_modules', '.gradle', 'target', '.build'},
+    'ide': {'.idea', '.vscode', '.vs', '*.pyc'},
+}
+
+
+def get_media_type(extension: str) -> Optional[str]:
+    """根据扩展名获取媒体类型"""
+    ext_lower = extension.lower()
+    for media_type, extensions in MEDIA_TYPES.items():
+        if ext_lower in extensions:
+            return media_type
+    return None
+
+
+def is_cleanable(path: str, name: str) -> Optional[str]:
+    """检查文件/目录是否可清理，返回清理类型"""
+    name_lower = name.lower()
+    for clean_type, patterns in CLEANABLE_PATTERNS.items():
+        for pattern in patterns:
+            if name_lower == pattern or name_lower.endswith(pattern):
+                return clean_type
+    return None
+
+
 @dataclass
 class FileInfo:
     """文件信息"""
@@ -19,6 +58,8 @@ class FileInfo:
     size: int
     mtime: float
     extension: str
+    media_type: Optional[str] = None
+    cleanable_type: Optional[str] = None
     
     @property
     def name(self) -> str:
@@ -201,11 +242,17 @@ class DiskScanner:
             _, ext = os.path.splitext(entry.name)
             ext = ext.lower() if ext else '(无扩展名)'
             
+            # 获取媒体类型和可清理类型
+            media_type = get_media_type(ext)
+            cleanable_type = is_cleanable(entry.path, entry.name)
+            
             file_info = FileInfo(
                 path=entry.path,
                 size=size,
                 mtime=stat_info.st_mtime,
-                extension=ext
+                extension=ext,
+                media_type=media_type,
+                cleanable_type=cleanable_type
             )
             
             dir_info.files.append(file_info)

@@ -288,43 +288,83 @@ class JSONReporter:
 
 
 class HTMLReporter:
-    """HTML 报告生成器"""
+    """HTML 报告生成器 - 增强版"""
     
     def __init__(self, scan_result: ScanResult):
         self.scan_result = scan_result
         self.analyzer = SpaceAnalyzer(scan_result)
     
-    def _build_tree_html(self, dir_info: DirInfo, total_size: int, depth: int = 0, max_depth: int = 4) -> str:
-        """递归构建目录树 HTML"""
+    def _generate_chart_data(self) -> dict:
+        """生成图表所需的数据"""
+        import json
+        
+        # 文件类型分布饼图数据
+        ext_stats = self.analyzer.get_extension_stats()[:10]
+        pie_data = [{'name': s.extension, 'value': s.total_size} for s in ext_stats]
+        
+        # 媒体类型统计
+        media_stats = self.analyzer.get_media_stats()
+        media_pie_data = [
+            {'name': k, 'value': v['total_size']} 
+            for k, v in media_stats.items() if v['total_size'] > 0
+        ]
+        
+        # 文件大小分布
+        size_dist = self.analyzer.get_size_distribution()
+        size_bar_data = {
+            'categories': list(size_dist.keys()),
+            'counts': [v['count'] for v in size_dist.values()],
+            'sizes': [v['total_size'] for v in size_dist.values()]
+        }
+        
+        # Treemap 数据
+        treemap_data = self.analyzer.get_treemap_data(max_depth=4)
+        
+        return {
+            'pieData': pie_data,
+            'mediaPieData': media_pie_data,
+            'sizeBarData': size_bar_data,
+            'treemapData': treemap_data
+        }
+    
+    def _build_interactive_tree(self, dir_info: DirInfo, total_size: int, depth: int = 0, max_depth: int = 5) -> str:
+        """构建可交互的目录树 HTML"""
+        import os
+        
         if depth > max_depth:
             return ""
         
         size_str = format_size(dir_info.total_size)
         percentage = (dir_info.total_size / total_size * 100) if total_size > 0 else 0
-        name = dir_info.name or dir_info.path
+        name = dir_info.name or os.path.basename(dir_info.path) or dir_info.path
         
-        # 过滤并排序子目录（只显示占比 > 0.5% 的）
+        # 过滤并排序子目录
         min_size = total_size * 0.005
         subdirs = [d for d in dir_info.subdirs.values() if d.total_size >= min_size]
         subdirs.sort(key=lambda d: d.total_size, reverse=True)
         
         has_children = len(subdirs) > 0 and depth < max_depth
+        collapsed = 'collapsed' if depth > 1 else ''
         
-        html = f'''<div class="tree-item" style="margin-left: {depth * 20}px;">
-            <div class="tree-node {'has-children' if has_children else ''}">
+        html = f'''
+        <div class="tree-item {collapsed}">
+            <div class="tree-header" onclick="toggleTree(this)">
+                <span class="tree-toggle">{('▶' if has_children else '•')}</span>
                 <span class="tree-icon">{'📂' if has_children else '📁'}</span>
-                <span class="tree-name">{name}</span>
-                <span class="tree-size">{size_str}</span>
-                <span class="tree-percent">{percentage:.1f}%</span>
-                <div class="tree-bar"><div class="tree-bar-fill" style="width: {percentage}%"></div></div>
+                <span class="tree-name" title="{dir_info.path}">{name}</span>
+                <span class="tree-meta">
+                    <span class="tree-size">{size_str}</span>
+                    <span class="tree-percent">{percentage:.1f}%</span>
+                    <div class="tree-bar"><div class="tree-bar-fill" style="width: {min(percentage, 100)}%"></div></div>
+                </span>
             </div>'''
         
         if has_children:
             html += '<div class="tree-children">'
-            for subdir in subdirs[:10]:  # 限制每层最多显示10个
-                html += self._build_tree_html(subdir, total_size, depth + 1, max_depth)
-            if len(subdirs) > 10:
-                html += f'<div class="tree-more" style="margin-left: {(depth+1) * 20}px;">... 还有 {len(subdirs) - 10} 个目录</div>'
+            for subdir in subdirs[:15]:
+                html += self._build_interactive_tree(subdir, total_size, depth + 1, max_depth)
+            if len(subdirs) > 15:
+                html += f'<div class="tree-more">... 还有 {len(subdirs) - 15} 个目录</div>'
             html += '</div>'
         
         html += '</div>'
@@ -332,13 +372,110 @@ class HTMLReporter:
     
     def generate_report(self, output_path: str):
         """生成 HTML 报告"""
-        summary = self.analyzer.get_summary()
-        top_dirs = self.analyzer.get_top_directories(30)
-        top_files = self.analyzer.get_top_files(30)
-        ext_stats = self.analyzer.get_extension_stats()[:20]
+        import json
         
-        # 构建目录树 HTML
-        tree_html = self._build_tree_html(self.scan_result.root, summary['total_size'])
+        summary = self.analyzer.get_summary()
+        top_dirs = self.analyzer.get_top_directories(20)
+        top_files = self.analyzer.get_top_files(20)
+        ext_stats = self.analyzer.get_extension_stats()[:15]
+        media_stats = self.analyzer.get_media_stats()
+        cleanable = self.analyzer.get_cleanable_suggestions()
+        chart_data = self._generate_chart_data()
+        
+        # 计算可清理总量
+        total_cleanable = sum(v['total_size'] for v in cleanable.values())
+        total_cleanable_str = format_size(total_cleanable)
+        
+        # 构建目录树
+        tree_html = self._build_interactive_tree(self.scan_result.root, summary['total_size'])
+        
+        # 媒体类型图标映射
+        media_icons = {
+            'video': '🎬', 'audio': '🎵', 'image': '🖼️', 
+            'document': '📄', 'archive': '📦', 'code': '💻', 'other': '📎'
+        }
+        
+        # 可清理类型图标映射
+        clean_icons = {
+            'cache': '🗑️', 'logs': '📋', 'temp': '⏱️', 'build': '🔧', 'ide': '💼'
+        }
+        
+        # Pre-build media cards HTML
+        media_cards_html = ''
+        for k, v in media_stats.items():
+            if v['count'] > 0:
+                icon = media_icons.get(k, '📎')
+                count_str = "{:,}".format(v['count'])
+                media_cards_html += f'''
+                <div class="media-card">
+                    <div class="media-icon">{icon}</div>
+                    <div class="media-type">{k}</div>
+                    <div class="media-size">{v['formatted_size']}</div>
+                    <div class="media-count">{count_str} 个文件</div>
+                </div>'''
+        
+        # Pre-build cleanup cards HTML
+        cleanup_cards_html = ''
+        for k, v in cleanable.items():
+            if v['total_size'] > 0:
+                icon = clean_icons.get(k, '🗑️')
+                cleanup_cards_html += f'''
+                <div class="cleanup-card">
+                    <div class="cleanup-header">
+                        <span class="cleanup-icon">{icon}</span>
+                        <span class="cleanup-type">{k}</span>
+                    </div>
+                    <div class="cleanup-size">{v['formatted_size']}</div>
+                    <div class="cleanup-count">{v['count']} 个项目</div>
+                </div>'''
+        
+        # Pre-build top dirs table HTML
+        total_size = summary['total_size']
+        dirs_table_html = ''
+        for i, d in enumerate(top_dirs):
+            pct = (d.total_size / total_size * 100) if total_size > 0 else 0
+            dirs_table_html += f'''
+                        <tr>
+                            <td class="rank">{i+1}</td>
+                            <td class="size">{format_size(d.total_size)}</td>
+                            <td class="bar-cell">
+                                <div class="mini-bar"><div class="mini-bar-fill" style="width:{pct:.1f}%"></div></div>
+                                <span class="percent">{pct:.1f}%</span>
+                            </td>
+                            <td class="path" title="{d.path}">{d.path}</td>
+                        </tr>'''
+        
+        # Pre-build top files table HTML
+        files_table_html = ''
+        for i, f in enumerate(top_files):
+            files_table_html += f'''
+                        <tr>
+                            <td class="rank">{i+1}</td>
+                            <td class="size">{format_size(f.size)}</td>
+                            <td class="path" title="{f.path}">{f.path}</td>
+                        </tr>'''
+        
+        # Pre-build extension stats table HTML
+        types_table_html = ''
+        for s in ext_stats:
+            pct = (s.total_size / total_size * 100) if total_size > 0 else 0
+            count_str = "{:,}".format(s.file_count)
+            types_table_html += f'''
+                        <tr>
+                            <td><code style="color: var(--info);">{s.extension}</code></td>
+                            <td class="size">{s.formatted_size}</td>
+                            <td class="bar-cell">
+                                <div class="mini-bar"><div class="mini-bar-fill" style="width:{pct:.1f}%"></div></div>
+                                <span class="percent">{pct:.1f}%</span>
+                            </td>
+                            <td>{count_str}</td>
+                        </tr>'''
+        
+        # Format summary values
+        total_files_str = "{:,}".format(summary['total_files'])
+        total_dirs_str = "{:,}".format(summary['total_dirs'])
+        chart_data_json = json.dumps(chart_data, ensure_ascii=False)
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         html = f'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -346,166 +483,947 @@ class HTMLReporter:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>磁盘空间分析报告</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {{
             --primary: #6366f1;
+            --primary-light: #818cf8;
             --primary-dark: #4f46e5;
-            --bg: #0f172a;
-            --bg-card: #1e293b;
-            --text: #f1f5f9;
-            --text-dim: #94a3b8;
-            --success: #22c55e;
+            --accent: #a855f7;
+            --success: #10b981;
             --warning: #f59e0b;
             --danger: #ef4444;
+            --info: #06b6d4;
+            --bg-dark: #0a0a0f;
+            --bg-card: #12121a;
+            --bg-card-hover: #1a1a24;
+            --bg-elevated: #1e1e2d;
+            --border: rgba(255,255,255,0.08);
+            --text: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-dim: #64748b;
+            --gradient-primary: linear-gradient(135deg, #6366f1, #a855f7);
+            --gradient-success: linear-gradient(135deg, #10b981, #06b6d4);
+            --gradient-warning: linear-gradient(135deg, #f59e0b, #f97316);
+            --gradient-danger: linear-gradient(135deg, #ef4444, #ec4899);
+            --shadow-glow: 0 0 40px rgba(99, 102, 241, 0.15);
+            --shadow-card: 0 4px 24px rgba(0,0,0,0.4);
         }}
+        
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
             color: var(--text);
             line-height: 1.6;
+            min-height: 100vh;
+        }}
+        
+        .container {{
+            max-width: 1400px;
+            margin: 0 auto;
             padding: 2rem;
         }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        h1 {{
-            font-size: 2.5rem;
-            background: linear-gradient(135deg, var(--primary), #a855f7);
+        
+        /* Header */
+        .header {{
+            text-align: center;
+            margin-bottom: 3rem;
+            padding: 3rem 0;
+            background: linear-gradient(180deg, rgba(99,102,241,0.1) 0%, transparent 100%);
+            border-radius: 24px;
+            position: relative;
+            overflow: hidden;
+        }}
+        
+        .header::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 200px;
+            height: 2px;
+            background: var(--gradient-primary);
+        }}
+        
+        .header h1 {{
+            font-size: 3rem;
+            font-weight: 700;
+            background: var(--gradient-primary);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            background-clip: text;
             margin-bottom: 0.5rem;
+            letter-spacing: -0.02em;
         }}
-        .subtitle {{ color: var(--text-dim); margin-bottom: 2rem; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }}
+        
+        .header .subtitle {{
+            color: var(--text-secondary);
+            font-size: 1rem;
+        }}
+        
+        .header .scan-path {{
+            margin-top: 1rem;
+            padding: 0.75rem 1.5rem;
+            background: var(--bg-card);
+            border-radius: 50px;
+            display: inline-block;
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--text-dim);
+            border: 1px solid var(--border);
+        }}
+        
+        /* Stats Grid */
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }}
+        
         .stat-card {{
             background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
             padding: 1.5rem;
-            border-radius: 1rem;
-            border: 1px solid rgba(255,255,255,0.1);
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
         }}
-        .stat-value {{ font-size: 2rem; font-weight: bold; color: var(--success); }}
-        .stat-label {{ color: var(--text-dim); font-size: 0.875rem; }}
+        
+        .stat-card:hover {{
+            background: var(--bg-card-hover);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-card);
+        }}
+        
+        .stat-card::before {{
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-primary);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }}
+        
+        .stat-card:hover::before {{ opacity: 1; }}
+        
+        .stat-icon {{
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }}
+        
+        .stat-value {{
+            font-size: 2rem;
+            font-weight: 700;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }}
+        
+        .stat-card.success .stat-value {{
+            background: var(--gradient-success);
+            -webkit-background-clip: text;
+            background-clip: text;
+        }}
+        
+        .stat-card.warning .stat-value {{
+            background: var(--gradient-warning);
+            -webkit-background-clip: text;
+            background-clip: text;
+        }}
+        
+        .stat-label {{
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }}
+        
+        /* Section Card */
         .section {{
             background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
             padding: 1.5rem;
-            border-radius: 1rem;
             margin-bottom: 1.5rem;
-            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: var(--shadow-card);
         }}
-        .section h2 {{ margin-bottom: 1rem; font-size: 1.25rem; }}
-        table {{ width: 100%; border-collapse: collapse; }}
-        th, td {{ padding: 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }}
-        th {{ color: var(--text-dim); font-weight: 500; }}
-        .size {{ color: var(--success); font-family: monospace; }}
-        .path {{ color: var(--text-dim); font-size: 0.875rem; word-break: break-all; }}
-        .bar-container {{ width: 100px; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }}
-        .bar {{ height: 100%; background: linear-gradient(90deg, var(--primary), #a855f7); border-radius: 4px; }}
-        .percent {{ color: var(--text-dim); font-size: 0.875rem; min-width: 50px; }}
         
-        /* 目录树样式 */
-        .tree-item {{ margin: 4px 0; }}
-        .tree-node {{
+        .section-header {{
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 6px 10px;
-            border-radius: 6px;
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }}
+        
+        .section-icon {{
+            font-size: 1.5rem;
+        }}
+        
+        .section-title {{
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text);
+        }}
+        
+        /* Charts Grid */
+        .charts-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }}
+        
+        .chart-container {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-card);
+        }}
+        
+        .chart-title {{
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+        
+        .chart {{
+            height: 300px;
+            width: 100%;
+        }}
+        
+        .chart-large {{
+            height: 400px;
+        }}
+        
+        /* Tables */
+        .table-wrapper {{
+            overflow-x: auto;
+        }}
+        
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+        
+        th, td {{
+            padding: 0.875rem 1rem;
+            text-align: left;
+        }}
+        
+        th {{
+            color: var(--text-dim);
+            font-weight: 500;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border);
+        }}
+        
+        tr {{
+            border-bottom: 1px solid var(--border);
             transition: background 0.2s;
         }}
-        .tree-node:hover {{ background: rgba(255,255,255,0.05); }}
-        .tree-icon {{ font-size: 1rem; }}
-        .tree-name {{ color: var(--warning); font-weight: 500; min-width: 150px; }}
-        .tree-size {{ color: var(--success); font-family: monospace; min-width: 80px; }}
-        .tree-percent {{ color: var(--text-dim); font-size: 0.875rem; min-width: 50px; }}
-        .tree-bar {{ width: 100px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }}
-        .tree-bar-fill {{ height: 100%; background: linear-gradient(90deg, var(--primary), #a855f7); border-radius: 3px; }}
-        .tree-children {{ border-left: 2px solid rgba(255,255,255,0.1); margin-left: 10px; padding-left: 5px; }}
-        .tree-more {{ color: var(--text-dim); font-size: 0.875rem; padding: 4px 10px; font-style: italic; }}
+        
+        tr:hover {{
+            background: var(--bg-elevated);
+        }}
+        
+        tr:last-child {{
+            border-bottom: none;
+        }}
+        
+        .rank {{
+            color: var(--text-dim);
+            font-weight: 600;
+            font-size: 0.875rem;
+        }}
+        
+        .size {{
+            color: var(--success);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+        }}
+        
+        .path {{
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        
+        .bar-cell {{
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }}
+        
+        .mini-bar {{
+            width: 80px;
+            height: 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+            overflow: hidden;
+        }}
+        
+        .mini-bar-fill {{
+            height: 100%;
+            background: var(--gradient-primary);
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }}
+        
+        .percent {{
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            min-width: 45px;
+        }}
+        
+        /* Tree */
+        .tree-container {{
+            max-height: 600px;
+            overflow-y: auto;
+            padding-right: 0.5rem;
+        }}
+        
+        .tree-container::-webkit-scrollbar {{
+            width: 6px;
+        }}
+        
+        .tree-container::-webkit-scrollbar-track {{
+            background: var(--bg-elevated);
+            border-radius: 3px;
+        }}
+        
+        .tree-container::-webkit-scrollbar-thumb {{
+            background: var(--primary);
+            border-radius: 3px;
+        }}
+        
+        .tree-item {{
+            margin: 2px 0;
+        }}
+        
+        .tree-item.collapsed > .tree-children {{
+            display: none;
+        }}
+        
+        .tree-item.collapsed .tree-toggle {{
+            transform: rotate(0deg);
+        }}
+        
+        .tree-header {{
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        
+        .tree-header:hover {{
+            background: var(--bg-elevated);
+        }}
+        
+        .tree-toggle {{
+            color: var(--text-dim);
+            font-size: 0.7rem;
+            width: 12px;
+            transition: transform 0.2s;
+            transform: rotate(90deg);
+        }}
+        
+        .tree-icon {{
+            font-size: 1rem;
+        }}
+        
+        .tree-name {{
+            color: var(--warning);
+            font-weight: 500;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        
+        .tree-meta {{
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }}
+        
+        .tree-size {{
+            color: var(--success);
+            font-family: monospace;
+            font-size: 0.85rem;
+            min-width: 70px;
+            text-align: right;
+        }}
+        
+        .tree-percent {{
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            min-width: 45px;
+        }}
+        
+        .tree-bar {{
+            width: 60px;
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 2px;
+            overflow: hidden;
+        }}
+        
+        .tree-bar-fill {{
+            height: 100%;
+            background: var(--gradient-primary);
+            border-radius: 2px;
+        }}
+        
+        .tree-children {{
+            margin-left: 1.5rem;
+            border-left: 1px solid var(--border);
+            padding-left: 0.5rem;
+        }}
+        
+        .tree-more {{
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            padding: 0.5rem 0.75rem;
+            font-style: italic;
+        }}
+        
+        /* Media Cards */
+        .media-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+        }}
+        
+        .media-card {{
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+            text-align: center;
+            transition: all 0.3s ease;
+        }}
+        
+        .media-card:hover {{
+            transform: translateY(-2px);
+            border-color: var(--primary);
+        }}
+        
+        .media-icon {{
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }}
+        
+        .media-type {{
+            font-weight: 600;
+            text-transform: capitalize;
+            margin-bottom: 0.25rem;
+        }}
+        
+        .media-size {{
+            color: var(--success);
+            font-weight: 700;
+            font-size: 1.25rem;
+        }}
+        
+        .media-count {{
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }}
+        
+        /* Cleanup Section */
+        .cleanup-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+        }}
+        
+        .cleanup-card {{
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+            transition: all 0.3s ease;
+        }}
+        
+        .cleanup-card:hover {{
+            border-color: var(--danger);
+        }}
+        
+        .cleanup-header {{
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }}
+        
+        .cleanup-icon {{
+            font-size: 1.5rem;
+        }}
+        
+        .cleanup-type {{
+            font-weight: 600;
+            text-transform: capitalize;
+        }}
+        
+        .cleanup-size {{
+            color: var(--danger);
+            font-weight: 700;
+            font-size: 1.5rem;
+            margin-bottom: 0.25rem;
+        }}
+        
+        .cleanup-count {{
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }}
+        
+        /* Tabs */
+        .tabs {{
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }}
+        
+        .tab {{
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            font-weight: 500;
+        }}
+        
+        .tab:hover {{
+            color: var(--text);
+            background: var(--bg-elevated);
+        }}
+        
+        .tab.active {{
+            color: var(--primary-light);
+            background: rgba(99,102,241,0.1);
+        }}
+        
+        .tab-content {{
+            display: none;
+        }}
+        
+        .tab-content.active {{
+            display: block;
+        }}
+        
+        /* Footer */
+        .footer {{
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-dim);
+            font-size: 0.875rem;
+        }}
+        
+        /* Responsive */
+        @media (max-width: 768px) {{
+            .container {{
+                padding: 1rem;
+            }}
+            
+            .header h1 {{
+                font-size: 2rem;
+            }}
+            
+            .charts-grid {{
+                grid-template-columns: 1fr;
+            }}
+            
+            .chart {{
+                height: 250px;
+            }}
+        }}
+        
+        /* Animations */
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        
+        .section, .chart-container, .stat-card {{
+            animation: fadeIn 0.5s ease forwards;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 磁盘空间分析报告</h1>
-        <p class="subtitle">扫描路径: {summary['root_path']} | 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <!-- Header -->
+        <header class="header">
+            <h1>📊 磁盘空间分析报告</h1>
+            <p class="subtitle">扫描完成于 {current_time}</p>
+            <div class="scan-path">📁 {summary['root_path']}</div>
+        </header>
         
-        <div class="grid">
+        <!-- Stats Overview -->
+        <div class="stats-grid">
             <div class="stat-card">
+                <div class="stat-icon">💾</div>
                 <div class="stat-value">{summary['formatted_size']}</div>
                 <div class="stat-label">总占用空间</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-value">{summary['total_files']:,}</div>
+            <div class="stat-card success">
+                <div class="stat-icon">📄</div>
+                <div class="stat-value">{total_files_str}</div>
                 <div class="stat-label">文件数量</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value">{summary['total_dirs']:,}</div>
+                <div class="stat-icon">📂</div>
+                <div class="stat-value">{total_dirs_str}</div>
                 <div class="stat-label">目录数量</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-value">{summary['errors_count']}</div>
-                <div class="stat-label">扫描错误</div>
+            <div class="stat-card warning">
+                <div class="stat-icon">🧹</div>
+                <div class="stat-value">{total_cleanable_str}</div>
+                <div class="stat-label">可清理空间</div>
             </div>
         </div>
         
-        <div class="section">
-            <h2>🌳 目录结构</h2>
-            {tree_html}
+        <!-- Charts Row -->
+        <div class="charts-grid">
+            <div class="chart-container">
+                <div class="chart-title">📊 文件类型分布</div>
+                <div id="pieChart" class="chart"></div>
+            </div>
+            <div class="chart-container">
+                <div class="chart-title">🎬 媒体文件占比</div>
+                <div id="mediaPieChart" class="chart"></div>
+            </div>
         </div>
         
-        <div class="section">
-            <h2>📂 最大的目录</h2>
-            <table>
-                <tr><th>排名</th><th>大小</th><th>占比</th><th>路径</th></tr>
-                {''.join(f"""
-                <tr>
-                    <td>{i+1}</td>
-                    <td class="size">{format_size(d.total_size)}</td>
-                    <td>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <div class="bar-container"><div class="bar" style="width:{d.total_size/summary['total_size']*100:.1f}%"></div></div>
-                            <span class="percent">{d.total_size/summary['total_size']*100:.1f}%</span>
-                        </div>
-                    </td>
-                    <td class="path">{d.path}</td>
-                </tr>""" for i, d in enumerate(top_dirs))}
-            </table>
+        <!-- Treemap -->
+        <div class="chart-container" style="margin-bottom: 1.5rem;">
+            <div class="chart-title">🗺️ 空间占用地图（点击可下钻）</div>
+            <div id="treemapChart" class="chart chart-large"></div>
         </div>
         
-        <div class="section">
-            <h2>📄 最大的文件</h2>
-            <table>
-                <tr><th>排名</th><th>大小</th><th>文件路径</th></tr>
-                {''.join(f"""
-                <tr>
-                    <td>{i+1}</td>
-                    <td class="size">{format_size(f.size)}</td>
-                    <td class="path">{f.path}</td>
-                </tr>""" for i, f in enumerate(top_files))}
-            </table>
+        <!-- Size Distribution -->
+        <div class="chart-container" style="margin-bottom: 1.5rem;">
+            <div class="chart-title">📈 文件大小分布</div>
+            <div id="sizeBarChart" class="chart"></div>
         </div>
         
+        <!-- Media Files Analysis -->
         <div class="section">
-            <h2>📊 按文件类型</h2>
-            <table>
-                <tr><th>扩展名</th><th>大小</th><th>占比</th><th>文件数</th></tr>
-                {''.join(f"""
-                <tr>
-                    <td><code>{s.extension}</code></td>
-                    <td class="size">{s.formatted_size}</td>
-                    <td>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <div class="bar-container"><div class="bar" style="width:{s.total_size/summary['total_size']*100:.1f}%"></div></div>
-                            <span class="percent">{s.total_size/summary['total_size']*100:.1f}%</span>
-                        </div>
-                    </td>
-                    <td>{s.file_count:,}</td>
-                </tr>""" for s in ext_stats)}
-            </table>
+            <div class="section-header">
+                <span class="section-icon">🎬</span>
+                <h2 class="section-title">媒体文件分析</h2>
+            </div>
+            <div class="media-grid">
+                {media_cards_html}
+            </div>
         </div>
+        
+        <!-- Cleanup Suggestions -->
+        <div class="section">
+            <div class="section-header">
+                <span class="section-icon">🧹</span>
+                <h2 class="section-title">可清理空间建议</h2>
+            </div>
+            <div class="cleanup-grid">
+                {cleanup_cards_html}
+            </div>
+        </div>
+        
+        <!-- Directory Tree -->
+        <div class="section">
+            <div class="section-header">
+                <span class="section-icon">🌳</span>
+                <h2 class="section-title">目录结构</h2>
+            </div>
+            <div class="tree-container">
+                {tree_html}
+            </div>
+        </div>
+        
+        <!-- Top Items Tabs -->
+        <div class="section">
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('dirs')">📂 最大目录</div>
+                <div class="tab" onclick="switchTab('files')">📄 最大文件</div>
+                <div class="tab" onclick="switchTab('types')">📊 文件类型</div>
+            </div>
+            
+            <div id="tab-dirs" class="tab-content active">
+                <div class="table-wrapper">
+                    <table>
+                        <tr><th>#</th><th>大小</th><th>占比</th><th>路径</th></tr>
+                        {dirs_table_html}
+                    </table>
+                </div>
+            </div>
+            
+            <div id="tab-files" class="tab-content">
+                <div class="table-wrapper">
+                    <table>
+                        <tr><th>#</th><th>大小</th><th>文件路径</th></tr>
+                        {files_table_html}
+                    </table>
+                </div>
+            </div>
+            
+            <div id="tab-types" class="tab-content">
+                <div class="table-wrapper">
+                    <table>
+                        <tr><th>扩展名</th><th>大小</th><th>占比</th><th>文件数</th></tr>
+                        {types_table_html}
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <footer class="footer">
+            <p>由 macOS 磁盘空间分析工具生成 | {current_time}</p>
+        </footer>
     </div>
+    
+    <script>
+        // Chart Data
+        const chartData = {chart_data_json};
+        
+        // Format size helper
+        function formatSize(bytes) {{
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) {{
+                bytes /= 1024;
+                i++;
+            }}
+            return bytes.toFixed(1) + ' ' + units[i];
+        }}
+        
+        // Pie Chart - File Types
+        const pieChart = echarts.init(document.getElementById('pieChart'));
+        pieChart.setOption({{
+            tooltip: {{
+                trigger: 'item',
+                formatter: (params) => `${{params.name}}<br/>大小: ${{formatSize(params.value)}}<br/>占比: ${{params.percent}}%`,
+                backgroundColor: 'rgba(30,30,45,0.95)',
+                borderColor: 'rgba(99,102,241,0.3)',
+                textStyle: {{ color: '#f1f5f9' }}
+            }},
+            legend: {{
+                orient: 'vertical',
+                right: '5%',
+                top: 'center',
+                textStyle: {{ color: '#94a3b8' }}
+            }},
+            series: [{{
+                type: 'pie',
+                radius: ['45%', '75%'],
+                center: ['35%', '50%'],
+                avoidLabelOverlap: false,
+                itemStyle: {{
+                    borderRadius: 8,
+                    borderColor: '#12121a',
+                    borderWidth: 2
+                }},
+                label: {{ show: false }},
+                emphasis: {{
+                    label: {{ show: true, fontSize: 14, fontWeight: 'bold' }}
+                }},
+                labelLine: {{ show: false }},
+                data: chartData.pieData,
+                color: ['#6366f1', '#a855f7', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6']
+            }}]
+        }});
+        
+        // Media Pie Chart
+        const mediaPieChart = echarts.init(document.getElementById('mediaPieChart'));
+        mediaPieChart.setOption({{
+            tooltip: {{
+                trigger: 'item',
+                formatter: (params) => `${{params.name}}<br/>大小: ${{formatSize(params.value)}}<br/>占比: ${{params.percent}}%`,
+                backgroundColor: 'rgba(30,30,45,0.95)',
+                borderColor: 'rgba(99,102,241,0.3)',
+                textStyle: {{ color: '#f1f5f9' }}
+            }},
+            legend: {{
+                orient: 'vertical',
+                right: '5%',
+                top: 'center',
+                textStyle: {{ color: '#94a3b8' }}
+            }},
+            series: [{{
+                type: 'pie',
+                radius: ['45%', '75%'],
+                center: ['35%', '50%'],
+                roseType: 'radius',
+                itemStyle: {{
+                    borderRadius: 8,
+                    borderColor: '#12121a',
+                    borderWidth: 2
+                }},
+                label: {{ show: false }},
+                emphasis: {{
+                    label: {{ show: true, fontSize: 14, fontWeight: 'bold' }}
+                }},
+                data: chartData.mediaPieData,
+                color: ['#f43f5e', '#a855f7', '#06b6d4', '#22c55e', '#f97316', '#6366f1', '#64748b']
+            }}]
+        }});
+        
+        // Treemap Chart
+        const treemapChart = echarts.init(document.getElementById('treemapChart'));
+        treemapChart.setOption({{
+            tooltip: {{
+                formatter: (info) => {{
+                    const value = info.value;
+                    return `<strong>${{info.name}}</strong><br/>大小: ${{formatSize(value)}}`;
+                }},
+                backgroundColor: 'rgba(30,30,45,0.95)',
+                borderColor: 'rgba(99,102,241,0.3)',
+                textStyle: {{ color: '#f1f5f9' }}
+            }},
+            series: [{{
+                type: 'treemap',
+                data: [chartData.treemapData],
+                width: '100%',
+                height: '100%',
+                roam: false,
+                nodeClick: 'zoomToNode',
+                breadcrumb: {{
+                    show: true,
+                    height: 26,
+                    itemStyle: {{
+                        color: '#1e1e2d',
+                        borderColor: 'rgba(255,255,255,0.1)',
+                        textStyle: {{ color: '#94a3b8' }}
+                    }}
+                }},
+                label: {{
+                    show: true,
+                    formatter: (params) => {{
+                        return params.name + '\\n' + formatSize(params.value);
+                    }},
+                    fontSize: 11,
+                    color: '#f1f5f9'
+                }},
+                itemStyle: {{
+                    borderColor: '#0a0a0f',
+                    borderWidth: 2,
+                    gapWidth: 2
+                }},
+                levels: [
+                    {{ itemStyle: {{ borderWidth: 0, gapWidth: 5 }} }},
+                    {{ colorSaturation: [0.3, 0.6], itemStyle: {{ borderColorSaturation: 0.7, gapWidth: 2, borderWidth: 2 }} }},
+                    {{ colorSaturation: [0.3, 0.5], itemStyle: {{ borderColorSaturation: 0.6, gapWidth: 1 }} }},
+                    {{ colorSaturation: [0.3, 0.5] }}
+                ],
+                color: ['#6366f1', '#a855f7', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4']
+            }}]
+        }});
+        
+        // Size Distribution Bar Chart
+        const sizeBarChart = echarts.init(document.getElementById('sizeBarChart'));
+        sizeBarChart.setOption({{
+            tooltip: {{
+                trigger: 'axis',
+                axisPointer: {{ type: 'shadow' }},
+                formatter: (params) => {{
+                    const data = params[0];
+                    const sizeData = chartData.sizeBarData.sizes[data.dataIndex];
+                    return `${{data.name}}<br/>文件数: ${{data.value}}<br/>总大小: ${{formatSize(sizeData)}}`;
+                }},
+                backgroundColor: 'rgba(30,30,45,0.95)',
+                borderColor: 'rgba(99,102,241,0.3)',
+                textStyle: {{ color: '#f1f5f9' }}
+            }},
+            grid: {{
+                left: '3%',
+                right: '4%',
+                bottom: '3%',
+                containLabel: true
+            }},
+            xAxis: {{
+                type: 'category',
+                data: chartData.sizeBarData.categories,
+                axisLine: {{ lineStyle: {{ color: 'rgba(255,255,255,0.1)' }} }},
+                axisLabel: {{ color: '#94a3b8', fontSize: 11 }}
+            }},
+            yAxis: {{
+                type: 'value',
+                axisLine: {{ show: false }},
+                axisLabel: {{ color: '#94a3b8' }},
+                splitLine: {{ lineStyle: {{ color: 'rgba(255,255,255,0.05)' }} }}
+            }},
+            series: [{{
+                data: chartData.sizeBarData.counts,
+                type: 'bar',
+                barWidth: '60%',
+                itemStyle: {{
+                    borderRadius: [6, 6, 0, 0],
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        {{ offset: 0, color: '#a855f7' }},
+                        {{ offset: 1, color: '#6366f1' }}
+                    ])
+                }},
+                emphasis: {{
+                    itemStyle: {{
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            {{ offset: 0, color: '#c084fc' }},
+                            {{ offset: 1, color: '#818cf8' }}
+                        ])
+                    }}
+                }}
+            }}]
+        }});
+        
+        // Resize handler
+        window.addEventListener('resize', () => {{
+            pieChart.resize();
+            mediaPieChart.resize();
+            treemapChart.resize();
+            sizeBarChart.resize();
+        }});
+        
+        // Tab switching
+        function switchTab(tabName) {{
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabName).classList.add('active');
+        }}
+        
+        // Tree toggle
+        function toggleTree(element) {{
+            const treeItem = element.closest('.tree-item');
+            treeItem.classList.toggle('collapsed');
+        }}
+    </script>
 </body>
 </html>'''
         
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
         
-        print(f"HTML 报告已保存到: {output_path}")
+        print(f"📊 HTML 报告已保存到: {output_path}")

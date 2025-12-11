@@ -152,13 +152,13 @@ class SpaceAnalyzer:
             按大小区间分组的统计
         """
         ranges = [
-            ('< 1 KB', 0, 1024),
+            ('<1 KB', 0, 1024),
             ('1 KB - 100 KB', 1024, 100 * 1024),
             ('100 KB - 1 MB', 100 * 1024, 1024 * 1024),
             ('1 MB - 10 MB', 1024 * 1024, 10 * 1024 * 1024),
             ('10 MB - 100 MB', 10 * 1024 * 1024, 100 * 1024 * 1024),
             ('100 MB - 1 GB', 100 * 1024 * 1024, 1024 * 1024 * 1024),
-            ('> 1 GB', 1024 * 1024 * 1024, float('inf'))
+            ('>1 GB', 1024 * 1024 * 1024, float('inf'))
         ]
         
         distribution = {name: {'count': 0, 'total_size': 0} for name, _, _ in ranges}
@@ -171,3 +171,154 @@ class SpaceAnalyzer:
                     break
         
         return distribution
+    
+    def get_media_stats(self) -> Dict[str, Dict[str, any]]:
+        """
+        获取媒体文件统计
+        
+        Returns:
+            按媒体类型分组的统计 {type: {count, total_size, files}}
+        """
+        from .scanner import MEDIA_TYPES
+        
+        stats = {}
+        for media_type in MEDIA_TYPES.keys():
+            stats[media_type] = {
+                'count': 0,
+                'total_size': 0,
+                'files': [],
+                'formatted_size': '0 B'
+            }
+        stats['other'] = {'count': 0, 'total_size': 0, 'files': [], 'formatted_size': '0 B'}
+        
+        for file in self.scan_result.all_files:
+            media_type = file.media_type or 'other'
+            if media_type in stats:
+                stats[media_type]['count'] += 1
+                stats[media_type]['total_size'] += file.size
+                # 只保留最大的20个文件
+                if len(stats[media_type]['files']) < 20:
+                    stats[media_type]['files'].append(file)
+                else:
+                    # 找到最小的文件替换
+                    min_idx = min(range(len(stats[media_type]['files'])), 
+                                  key=lambda i: stats[media_type]['files'][i].size)
+                    if file.size > stats[media_type]['files'][min_idx].size:
+                        stats[media_type]['files'][min_idx] = file
+        
+        # 格式化大小并排序文件
+        for media_type in stats:
+            stats[media_type]['formatted_size'] = format_size(stats[media_type]['total_size'])
+            stats[media_type]['files'].sort(key=lambda f: f.size, reverse=True)
+        
+        return stats
+    
+    def get_cleanable_suggestions(self) -> Dict[str, Dict[str, any]]:
+        """
+        获取可清理文件建议
+        
+        Returns:
+            按清理类型分组的统计
+        """
+        from .scanner import CLEANABLE_PATTERNS
+        
+        suggestions = {}
+        for clean_type in CLEANABLE_PATTERNS.keys():
+            suggestions[clean_type] = {
+                'count': 0,
+                'total_size': 0,
+                'items': [],
+                'formatted_size': '0 B'
+            }
+        
+        # 统计可清理文件
+        for file in self.scan_result.all_files:
+            if file.cleanable_type:
+                clean_type = file.cleanable_type
+                if clean_type in suggestions:
+                    suggestions[clean_type]['count'] += 1
+                    suggestions[clean_type]['total_size'] += file.size
+                    if len(suggestions[clean_type]['items']) < 10:
+                        suggestions[clean_type]['items'].append({
+                            'path': file.path,
+                            'size': file.size,
+                            'formatted_size': format_size(file.size),
+                            'type': 'file'
+                        })
+        
+        # 统计可清理目录
+        for dir_info in self.scan_result.all_dirs:
+            from .scanner import is_cleanable
+            import os
+            clean_type = is_cleanable(dir_info.path, os.path.basename(dir_info.path))
+            if clean_type and clean_type in suggestions:
+                suggestions[clean_type]['count'] += 1
+                suggestions[clean_type]['total_size'] += dir_info.total_size
+                if len(suggestions[clean_type]['items']) < 10:
+                    suggestions[clean_type]['items'].append({
+                        'path': dir_info.path,
+                        'size': dir_info.total_size,
+                        'formatted_size': format_size(dir_info.total_size),
+                        'type': 'directory'
+                    })
+        
+        # 格式化大小
+        for clean_type in suggestions:
+            suggestions[clean_type]['formatted_size'] = format_size(suggestions[clean_type]['total_size'])
+        
+        return suggestions
+    
+    def get_treemap_data(self, max_depth: int = 3) -> Dict:
+        """
+        获取 Treemap 图表数据
+        
+        Args:
+            max_depth: 最大深度
+            
+        Returns:
+            ECharts treemap 格式的数据
+        """
+        def build_treemap_node(dir_info: DirInfo, current_depth: int) -> Dict:
+            import os
+            node = {
+                'name': dir_info.name or os.path.basename(dir_info.path) or dir_info.path,
+                'value': dir_info.total_size,
+                'path': dir_info.path,
+            }
+            
+            if current_depth < max_depth and dir_info.subdirs:
+                # 过滤掉太小的目录
+                min_size = dir_info.total_size * 0.01  # 至少占1%
+                children = []
+                for subdir in sorted(dir_info.subdirs.values(), 
+                                     key=lambda d: d.total_size, reverse=True):
+                    if subdir.total_size >= min_size or len(children) < 5:
+                        children.append(build_treemap_node(subdir, current_depth + 1))
+                    if len(children) >= 15:  # 限制子节点数量
+                        break
+                
+                if children:
+                    node['children'] = children
+            
+            return node
+        
+        return build_treemap_node(self.scan_result.root, 0)
+    
+    def get_old_files(self, days: int = 365, n: int = 20) -> List[FileInfo]:
+        """
+        获取超过指定天数未修改的大文件
+        
+        Args:
+            days: 天数阈值
+            n: 返回文件数量
+            
+        Returns:
+            按大小降序排列的旧文件列表
+        """
+        import time
+        threshold = time.time() - (days * 24 * 60 * 60)
+        
+        old_files = [f for f in self.scan_result.all_files if f.mtime < threshold]
+        old_files.sort(key=lambda f: f.size, reverse=True)
+        
+        return old_files[:n]
