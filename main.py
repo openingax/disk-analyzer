@@ -370,37 +370,8 @@ def main():
     reporter = TerminalReporter(result, use_colors=use_colors)
     reporter.print_full_report(tree_depth=args.tree_depth)
     
-    # 生成 HTML 报告
-    if not args.no_html:
-        html_reporter = HTMLReporter(result)
-        
-        if args.output:
-            html_path = args.output
-        else:
-            # 生成临时文件
-            temp_dir = tempfile.gettempdir()
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            html_path = os.path.join(temp_dir, f'disk_report_{timestamp}.html')
-        
-        html_reporter.generate_report(html_path)
-        
-        # 自动打开浏览器
-        if not args.no_browser:
-            print(f"🌐 正在浏览器中打开报告...")
-            webbrowser.open(f'file://{os.path.abspath(html_path)}')
-    
-    # 生成 JSON 报告
-    if args.json:
-        json_reporter = JSONReporter(result)
-        json_reporter.generate_report(args.json)
-    
-    # 显示错误
-    if args.show_errors and result.errors:
-        print("\n所有扫描错误:")
-        for error in result.errors:
-            print(f"  • {error}")
-    
-    # 重复文件检测
+    # 重复文件检测（在生成 HTML 之前，以便包含在报告中）
+    duplicates = None
     if args.find_duplicates:
         print()
         print("=" * 60)
@@ -465,6 +436,37 @@ def main():
             print()
         else:
             print(f"\n✅ 检测完成! 未发现重复文件 (最小检测大小: {format_size(dup_min_size)})\n")
+    
+    # 生成 HTML 报告
+    if not args.no_html:
+        html_reporter = HTMLReporter(result)
+        
+        if args.output:
+            html_path = args.output
+        else:
+            # 生成临时文件
+            temp_dir = tempfile.gettempdir()
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            html_path = os.path.join(temp_dir, f'disk_report_{timestamp}.html')
+        
+        # 传递重复文件信息到 HTML 报告
+        html_reporter.generate_report(html_path, duplicates=duplicates)
+        
+        # 自动打开浏览器
+        if not args.no_browser:
+            print(f"🌐 正在浏览器中打开报告...")
+            webbrowser.open(f'file://{os.path.abspath(html_path)}')
+    
+    # 生成 JSON 报告
+    if args.json:
+        json_reporter = JSONReporter(result)
+        json_reporter.generate_report(args.json)
+    
+    # 显示错误
+    if args.show_errors and result.errors:
+        print("\n所有扫描错误:")
+        for error in result.errors:
+            print(f"  • {error}")
 
 
 if __name__ == '__main__':

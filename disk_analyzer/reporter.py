@@ -370,8 +370,13 @@ class HTMLReporter:
         html += '</div>'
         return html
     
-    def generate_report(self, output_path: str):
-        """生成 HTML 报告"""
+    def generate_report(self, output_path: str, duplicates=None):
+        """生成 HTML 报告
+        
+        Args:
+            output_path: 输出文件路径
+            duplicates: 可选的重复文件组列表 (List[DuplicateGroup])
+        """
         import json
         
         summary = self.analyzer.get_summary()
@@ -399,6 +404,45 @@ class HTMLReporter:
         clean_icons = {
             'cache': '🗑️', 'logs': '📋', 'temp': '⏱️', 'build': '🔧', 'ide': '💼'
         }
+        
+        # Pre-build duplicates HTML
+        duplicates_html = ''
+        duplicates_summary_html = ''
+        has_duplicates = duplicates and len(duplicates) > 0
+        
+        if has_duplicates:
+            total_wasted = sum(g.wasted_size for g in duplicates)
+            total_dup_files = sum(g.count for g in duplicates)
+            
+            duplicates_summary_html = f'''
+            <div class="stat-card danger">
+                <div class="stat-icon">🔄</div>
+                <div class="stat-value">{format_size(total_wasted)}</div>
+                <div class="stat-label">重复文件可释放</div>
+            </div>'''
+            
+            for i, group in enumerate(duplicates, 1):
+                files_html = ''
+                for f in group.files:
+                    path_display = f.path
+                    if len(path_display) > 60:
+                        path_display = '...' + path_display[-57:]
+                    files_html += f'''
+                    <div class="dup-file">
+                        <span class="dup-file-icon">📄</span>
+                        <span class="dup-file-path" title="{f.path}">{path_display}</span>
+                    </div>'''
+                
+                duplicates_html += f'''
+                <div class="dup-group">
+                    <div class="dup-group-header">
+                        <span class="dup-group-num">#{i}</span>
+                        <span class="dup-group-info">{group.count} 份相同文件</span>
+                        <span class="dup-group-size">{group.formatted_size}</span>
+                        <span class="dup-group-wasted">可释放 {group.formatted_wasted}</span>
+                    </div>
+                    <div class="dup-group-files">{files_html}</div>
+                </div>'''
         
         # Pre-build media cards HTML
         media_cards_html = ''
@@ -1000,6 +1044,109 @@ class HTMLReporter:
             font-size: 0.85rem;
         }}
         
+        /* Duplicates Section */
+        .dup-container {{
+            max-height: 600px;
+            overflow-y: auto;
+        }}
+        
+        .dup-group {{
+            background: var(--bg-elevated);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-bottom: 1rem;
+            overflow: hidden;
+        }}
+        
+        .dup-group-header {{
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1rem 1.25rem;
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05));
+            border-bottom: 1px solid var(--border);
+        }}
+        
+        .dup-group-num {{
+            background: var(--danger);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }}
+        
+        .dup-group-info {{
+            color: var(--text);
+            font-weight: 500;
+        }}
+        
+        .dup-group-size {{
+            color: var(--warning);
+            font-family: monospace;
+            font-weight: 600;
+        }}
+        
+        .dup-group-wasted {{
+            color: var(--danger);
+            font-weight: 600;
+            margin-left: auto;
+        }}
+        
+        .dup-group-files {{
+            padding: 0.75rem 1.25rem;
+        }}
+        
+        .dup-file {{
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+            border-bottom: 1px solid var(--border);
+        }}
+        
+        .dup-file:last-child {{
+            border-bottom: none;
+        }}
+        
+        .dup-file-icon {{
+            font-size: 0.9rem;
+        }}
+        
+        .dup-file-path {{
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
+        
+        .dup-summary {{
+            display: flex;
+            gap: 2rem;
+            margin-bottom: 1.5rem;
+            padding: 1rem 1.5rem;
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(239, 68, 68, 0.05));
+            border-radius: 12px;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }}
+        
+        .dup-summary-item {{
+            text-align: center;
+        }}
+        
+        .dup-summary-value {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--danger);
+        }}
+        
+        .dup-summary-label {{
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }}
+        
         /* Tabs */
         .tabs {{
             display: flex;
@@ -1152,6 +1299,9 @@ class HTMLReporter:
                 {cleanup_cards_html}
             </div>
         </div>
+        
+        <!-- Duplicate Files Section -->
+        {'<div class="section"><div class="section-header"><span class="section-icon">🔄</span><h2 class="section-title">重复文件检测</h2></div><div class="dup-container">' + duplicates_html + '</div></div>' if has_duplicates else ''}
         
         <!-- Directory Tree -->
         <div class="section">
